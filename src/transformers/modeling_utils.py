@@ -712,6 +712,7 @@ def _load_state_dict_into_meta_model(
     model: "PreTrainedModel",
     state_dict: Dict,
     expected_keys: List[str],
+    reverse_renaming_mapping: Dict[str, str],
     device_map: Optional[Dict] = None,
     disk_offload_folder: Optional[str] = None,
     disk_offload_index: Optional[Dict] = None,
@@ -762,13 +763,12 @@ def _load_state_dict_into_meta_model(
 
     is_torch_e4m3fn_available = hasattr(torch, "float8_e4m3fn")
 
-    for serialized_param_name, empty_param in state_dict.items():
-        # serialized_param_name is the raw, serialized name
-        # fixed_param_name is the model's equivalent
-        fixed_param_name, _ = model.rename_key(serialized_param_name)
-
+    for fixed_param_name, empty_param in state_dict.items():
         if fixed_param_name not in expected_keys:
             continue
+
+        # This is the name of the parameter as it appears on file
+        serialized_param_name = reverse_renaming_mapping[fixed_param_name]
 
         # we need to use serialized_param_name as file pointer is untouched
         param = (
@@ -4385,6 +4385,8 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 state_dict = load_gguf_checkpoint(checkpoint_files[0], return_tensors=True, model_to_load=dummy_model)[
                     "tensors"
                 ]
+                # Force it if is not already the case
+                low_cpu_mem_usage = True
 
             # Find the correct dtype based on current state
             config, torch_dtype, dtype_orig = _get_torch_dtype(
@@ -4476,7 +4478,6 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 dtype=torch_dtype,
                 hf_quantizer=hf_quantizer,
                 keep_in_fp32_modules=keep_in_fp32_modules,
-                gguf_file=gguf_file,
                 device_mesh=device_mesh,
                 key_mapping=key_mapping,
                 weights_only=weights_only,
@@ -4696,7 +4697,6 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         dtype: Optional[torch.dtype] = None,
         hf_quantizer: Optional[HfQuantizer] = None,
         keep_in_fp32_modules: Optional[List[str]] = None,
-        gguf_file: Optional[str] = None,
         device_mesh: Optional[torch.distributed.device_mesh.DeviceMesh] = None,
         key_mapping: Optional[Dict[str, str]] = None,
         weights_only: bool = True,
@@ -4850,6 +4850,11 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
             expanded_device_map = expand_device_map(device_map, checkpoint_keys)
             caching_allocator_warmup(model_to_load, expanded_device_map, dtype)
 
+        # This is a mapping from key that `model_to_load` expects to serialized key name
+        reverse_renaming_mapping = model_to_load._fix_state_dict_keys_on_load(
+            {k: k for k in checkpoint_keys}, key_mapping, loading_base_model_from_task_state_dict
+        )
+
         error_msgs = []
         mismatched_keys = []
         # Iterate on all the shards to load the weights
@@ -4858,7 +4863,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
             if shard_file in disk_only_shard_files:
                 continue
 
-            map_location = "meta" if low_cpu_mem_usage or gguf_file is not None else "cpu"
+            map_location = "meta" if low_cpu_mem_usage else "cpu"
 
             # If shard_file == "", we use the existing state_dict instead of loading it
             if shard_file != "":
@@ -4866,11 +4871,9 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                     shard_file, is_quantized=is_quantized, map_location=map_location, weights_only=weights_only
                 )
 
-            # Modify the keys if needed
-            if map_location != "meta":
-                state_dict = model_to_load._fix_state_dict_keys_on_load(
-                    state_dict, key_mapping, loading_base_model_from_task_state_dict
-                )
+            state_dict = model_to_load._fix_state_dict_keys_on_load(
+                state_dict, key_mapping, loading_base_model_from_task_state_dict
+            )
 
             # Mistmatched keys contains tuples key/shape1/shape2 of weights in the checkpoint that have a shape not
             # matching the weights in the model.
@@ -4881,13 +4884,14 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 model.base_model_prefix if loading_base_model_from_task_state_dict else "",
             )
 
-            if low_cpu_mem_usage or gguf_file is not None:
+            if low_cpu_mem_usage:
                 # Skip it with fsdp on ranks other than 0
                 if not (is_fsdp_enabled() and not is_local_dist_rank_0() and not is_quantized):
                     disk_offload_index, cpu_offload_index = _load_state_dict_into_meta_model(
                         model_to_load,
                         state_dict,
                         expected_keys,
+                        reverse_renaming_mapping,
                         device_map=device_map,
                         disk_offload_folder=disk_offload_folder,
                         disk_offload_index=disk_offload_index,
