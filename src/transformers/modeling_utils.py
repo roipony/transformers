@@ -4597,21 +4597,6 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
 
         return key, False
 
-    def rename_key(self, key):
-        new_key = key
-        if len(self.base_model_prefix) > 0:
-            if not hasattr(self, self.base_model_prefix) and key.startswith(self.base_model_prefix):
-                new_key = ".".join(key.split(".")[1:])
-            elif (
-                hasattr(self, self.base_model_prefix)
-                and not key.startswith(self.base_model_prefix)
-                and key not in self.expected_keys
-            ):
-                new_key = f"{self.base_model_prefix}.{key}"
-
-        new_key, has_changed = self._fix_state_dict_key_on_load(new_key)
-        return new_key, has_changed
-
     def _fix_state_dict_keys_on_load(
         self,
         state_dict: Dict[str, Any],
