@@ -408,7 +408,7 @@ class LlavaNextForConditionalGeneration(LlavaNextPreTrainedModel, GenerationMixi
     def get_decoder(self):
         return self.language_model.get_decoder()
 
-    def pack_image_features(self, image_features, image_sizes, vision_feature_select_strategy, image_newline=None):
+    def pack_image_features(self, image_features, image_sizes, vision_feature_select_strategy, image_newline=None, base_image_feature_location="first"):
         """
         Reshape, unpad and then pack each image_feature into a single image_features tensor containing all visual vectors.
 
@@ -465,7 +465,11 @@ class LlavaNextForConditionalGeneration(LlavaNextPreTrainedModel, GenerationMixi
                         dim=-1,
                     )
                 image_feature = image_feature.flatten(1, 2).transpose(0, 1)
-                image_feature = torch.cat((base_image_feature, image_feature), dim=0)
+                if base_image_feature_location == "last":
+                    image_feature = torch.cat((image_feature, base_image_feature), dim=0)
+                else:   
+                    image_feature = torch.cat((base_image_feature, image_feature), dim=0)
+
             else:
                 image_feature = image_feature[0]
                 if image_newline is not None:
@@ -623,6 +627,8 @@ class LlavaNextForConditionalGeneration(LlavaNextPreTrainedModel, GenerationMixi
             inputs_embeds = self.get_input_embeddings()(input_ids)
 
         if pixel_values is not None and pixel_values.size(0) > 0:
+                            
+            base_image_feature_location = getattr(self.config,'base_image_feature_location',"first")
             image_features = self.get_image_features(
                 pixel_values,
                 image_sizes,
@@ -636,6 +642,7 @@ class LlavaNextForConditionalGeneration(LlavaNextPreTrainedModel, GenerationMixi
                 image_sizes,
                 vision_feature_select_strategy=vision_feature_select_strategy,
                 image_newline=self.image_newline,
+                base_image_feature_location=base_image_feature_location
             )
 
             special_image_mask = (input_ids == self.config.image_token_index).unsqueeze(-1)
