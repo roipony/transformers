@@ -131,7 +131,7 @@ class GraniteAttention(nn.Module):
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.scaling = config.attention_multiplier
         self.attention_dropout = config.attention_dropout
-        self.is_causal = True
+        self.is_causal = getattr(config,'attention_is_causal',True)
 
         self.q_proj = nn.Linear(
             config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
